@@ -5,7 +5,7 @@
 #include "headers/pasm.h"
 
 char *USAGE = 
-"usage: pasm [-hv] file.asm file.bin\n"
+"usage: pasm [-hv] file.asm [file.bin]\n"
 "options:\n"
 "   -h              print this help message\n"
 "   -v              print version\n";
@@ -16,18 +16,38 @@ void print_usage() {
 }
 
 void print_version() {
-    printf("pasm version %s\n", __PASM_VERSION__);
-    exit(0);
+    printf("%s: pasm version %s\n", PROGNAME,
+        __PASM_VERSION__);
+    exit(EXIT_SUCCESS);
 }
 
-void die(char* msg) {
-    fprintf(stderr, "%s\n", msg);
-    exit(1);
+void expected(char* what, char* inst) {
+    fprintf(stderr, "%s: *** LINE %i: EXPECTED %s AFTER `%s'\n",
+            PROGNAME,
+            linenum, what, inst);
+    exit(EXIT_ASM_ERROR);
 }
 
-void assembly_error(char* msg, unsigned int linenum) {
-    fprintf(stderr, "*** LINE %i: %s\n", linenum + 1, msg);
-    exit(2);
+void argument_size(char* inst, char* size) {
+    fprintf(stderr,
+            "%s: *** LINE: %i: `%s' ARGUMENT "
+            "CANNOT BE GREATER THAN %s\n", PROGNAME,
+            linenum, inst, size);
+    exit(EXIT_ASM_ERROR);
+}
+
+void label_not_found(char* label) {
+    fprintf(stderr, "%s: *** LINE %i: LABEL %s NOT FOUND",
+            PROGNAME,
+            linenum, label);
+    exit(EXIT_ASM_ERROR);
+}
+
+void inst_unknown(char* inst) {
+    fprintf(stderr, "%s: *** LINE %i: UNKNOWN INSTRUCTION: `%s'\n",
+            PROGNAME,
+            linenum, inst);
+    exit(EXIT_ASM_ERROR);
 }
 
 char* get_string(char* token) {
@@ -101,11 +121,14 @@ unsigned int base16_decode(char* token) {
  * Generate labels' lookup table
  */
 void pass1() {
-    int index;
+    int index = 0;
     unsigned int i = 0;
+    linenum = 0;
+
     char *line = NULL;
-    char *linecp = malloc(1);
-    unsigned int linenum = 0;
+    char *linecp = malloc(0);
+    char *comment = {0};
+
     size_t address = 0;
     size_t size = 0;
     size_t addr = 0;
@@ -122,15 +145,16 @@ void pass1() {
             line[addr] = '\0'; // Get rid of '\n'
 
         // Strip the comments
-        linecp = strchr(line, ';');
-        if (linecp) {
-            index = (int)(linecp - line);
+        comment = strchr(line, ';');
+        if (comment) {
+            index = (int)(comment - line);
             line[index] = '\0';
         }
 
         words[i++] = line;
 
-        linecp = malloc(strlen(line) + 1);
+        linecp = realloc(linecp, strlen(line) + 1);
+        memset(linecp, '\0', strlen(line) + 1);
         strcpy(linecp, line);
         char* token = strtok(linecp, " \t");
         if (!token) continue;
@@ -140,7 +164,6 @@ void pass1() {
             // Label
             token[strlen(token) - 1] = '\0';
             Label label;
-            label.label = malloc(strlen(token) + 1);
             strcpy(label.label, token);
             label.address = address;
 
@@ -153,12 +176,12 @@ void pass1() {
             // We insert a string here
             token = strtok(NULL, "\0");
             if (!token)
-                assembly_error("EXPECTED \"...\" AFTER `string'",
-                                linenum);
+                expected("\"...\"", "string");
+
             size_t stringlen = quotelen(token);
             if (stringlen == -1)
-                assembly_error("EXPECTED \"...\" AFTER `string'",
-                                linenum);
+                expected("\"...\"", "string");
+
             // extra byte needed for \0 char
             address += stringlen + 1;
 
@@ -166,24 +189,24 @@ void pass1() {
             // We insert a string here
             token = strtok(NULL, "\0");
             if (!token)
-                assembly_error("EXPECTED \"...\" AFTER `stringn'",
-                                linenum);
+                expected("\"...\"", "stringn");
+
             size_t stringlen = quotelen(token);
             if (stringlen == -1)
-                assembly_error("EXPECTED \"...\" AFTER `stringn'",
-                                linenum);
+                expected("\"...\"", "stringn");
+
             address += stringlen;
 
         } else if (!strcmp(token, "stringl")) {
             // We insert a string here
             token = strtok(NULL, "\0");
             if (!token)
-                assembly_error("EXPECTED \"...\" AFTER `string'",
-                                linenum);
+                expected("\"...\"", "stringl");
+
             size_t stringlen = quotelen(token);
             if (stringlen == -1)
-                assembly_error("EXPECTED \"...\" AFTER `string'",
-                                linenum);
+                expected("\"...\"", "stringl");
+
             // extra bytes needed for \n and \0 chars
             address += stringlen + 2;
 
@@ -201,6 +224,7 @@ void pass1() {
         }
     }
     free(linecp);
+    free(line);
 }
 
 /* Parse assembly line by line;
@@ -212,7 +236,6 @@ void pass2() {
     size_t toksize;
     unsigned int label_addr;
     char *label = 0;
-    char *errorstr = 0;
     char *string = 0;
     unsigned int linenum = 0;
     unsigned char x;
@@ -244,9 +267,7 @@ void pass2() {
             if (token) {
                 i = base16_decode(token);
                 if (i > 0xFFFF)
-                    assembly_error("`halt #' ARGUMENT CANNOT "
-                        "BE GREATER THAN #FFFF",
-                        linenum);
+                    argument_size("halt #", "#FFFF");
             }
             else i = 0x0000;
             fputc(0x00, fpbin);
@@ -263,15 +284,14 @@ void pass2() {
         else if (!strcmp(token, "load")) {
             token = strtok(NULL, " ,\t");
             if (!token)
-                assembly_error("EXPECTED rx OR [X]"
-                                " AFTER `load'", linenum);
+                expected("rx OR [X]", "load");
 
             if (!strcmp(token, "[X]")) {
                 // 5mmm
                 token = strtok(NULL, " \t");
-                if (!token) 
-                    assembly_error("EXPECTED #NUM OR @LABEL "
-                                    "AFTER `load [X], '", linenum);
+                if (!token)
+                    expected("#NUM OR @LABEL", "load [X], ");
+
                 switch (*token) {
                     case '@':
                         // Label address
@@ -280,13 +300,8 @@ void pass2() {
 
                         label_addr = get_label_addr(token);
 
-                        if (label_addr == -1) {
-                            errorstr = malloc(strlen(token) + 17);
-                            sprintf(errorstr,
-                                "LABEL %s NOT FOUND",
-                                ++label);
-                            assembly_error(errorstr, linenum);
-                        }
+                        if (label_addr == -1)
+                            label_not_found(++label);
 
                         break;
 
@@ -294,14 +309,13 @@ void pass2() {
                         // A hex number
                         label_addr = base16_decode(token);
                         if (label_addr > 0xFFFF)
-                            assembly_error("`load [X], #' ARGUMENT "
-                                "CANNOT BE GREATER THAN #FFFF",
-                                linenum);
+                            argument_size("load [X], #", "#FFFF");
+
                         break;
 
                     default:
-                        assembly_error("EXPECTED #ADDR OR @LABEL "
-                                     "AFTER `load [X], '", linenum);
+                        expected("#ADDR OR @LABEL", "load [X], ");
+
                         break;
                 }
                 fputc(0x03, fpbin);
@@ -312,28 +326,23 @@ void pass2() {
                 // 1xnn
                 x = token[1];
                 if (!x)
-                    assembly_error("EXPECTED rx AFTER `load r'",
-                        linenum);
+                    expected("rx", "load r");
 
                 // Make sure user input is correct
                 byte = base16_decode(token);
                 if (byte > 0xF)
-                    assembly_error("`load r' ARGUMENT CANNOT"
-                        " BE GREATER THAN #F", linenum);
+                    argument_size("load r", "#F");
 
                 token = strtok(NULL, " \t");
 
                 if (!token)
-                    assembly_error("EXPECTED ry, #NUM OR "
-                        "[X] AFTER `load rx, '",
-                        linenum);
+                    expected("ry, #NUM OR [X]", "load rx, ");
 
                 if (*token == '#') {
                     i = base16_decode(token);
                     if (i > 0xFFF)
-                        assembly_error("`load rx, #' ARGUMENT "
-                            "CANNOT BE GREATER THAN #FFF",
-                            linenum);
+                        argument_size("load rx, #", "#FFF");
+
                     fputc(0x01, fpbin);
                     byte <<= 4;
                     fputc(byte | (i >> 8), fpbin);
@@ -342,9 +351,7 @@ void pass2() {
                 } else if (*token == 'r') {
                     i = base16_decode(token);
                     if (i > 0xF)
-                        assembly_error("`load rx, r' ARGUMENT "
-                            "CANNOT BE GREATER THAN #F",
-                            linenum);
+                        argument_size("load rx, r", "#F");
 
                     fputc(0x10, fpbin);
                     byte <<= 4;
@@ -357,7 +364,8 @@ void pass2() {
                     fputc(0x02, fpbin);
 
                 }
-            }
+            } else
+                expected("rx OR [X]", "load");
 
         }
 
@@ -369,32 +377,22 @@ void pass2() {
         else if (!strcmp(token, "fill")) {
             token = strtok(NULL, " ,\t");
             if (!token)
-                assembly_error("EXPECTED rx AFTER `fill'",
-                    linenum);
+                expected("rx", "fill");
 
             i = base16_decode(token);
             if (i > 0xF)
-                assembly_error("`fill r' ARGUMENT CANNOT "
-                    "BE GREATER THAN #F",
-                    linenum);
+                argument_size("fill r", "#F");
 
             token = strtok(NULL, " \t");
             if (!token)
-                assembly_error("EXPECTED @ADDR AFTER `fill rx, '",
-                    linenum);
+                expected("@LABEL", "fill rx, ");
 
             if (*token != '@')
-                assembly_error("EXPECTED @ADDR AFTER `fill rx, '",
-                    linenum);
+                expected("@LABEL", "fill rx, ");
 
             label_addr = get_label_addr(token);
-            if (label_addr == -1) {
-                errorstr = malloc(strlen(token) + 17);
-                sprintf(errorstr,
-                    "LABEL %s NOT FOUND",
-                    ++token);
-                assembly_error(errorstr, linenum);
-            }
+            if (label_addr == -1)
+                label_not_found(++token);
 
             fputc(0x03, fpbin);
             fputc(label_addr >> 8, fpbin);
@@ -414,32 +412,22 @@ void pass2() {
         else if (!strcmp(token, "store")) {
             token = strtok(NULL, " ,\t");
             if (!token)
-                assembly_error("EXPECTED rx AFTER `store'",
-                    linenum);
+                expected("rx", "store");
 
             i = base16_decode(token);
             if (i > 0xF)
-                assembly_error("`store r' ARGUMENT CANNOT "
-                    "BE GREATER THAN #F",
-                    linenum);
+                argument_size("store r", "#F");
 
             token = strtok(NULL, " \t");
             if (!token)
-                assembly_error("EXPECTED @ADDR AFTER `store rx, '",
-                    linenum);
+                expected("@LABEL", "store rx, ");
 
             if (*token != '@')
-                assembly_error("EXPECTED @ADDR AFTER `store rx, '",
-                    linenum);
+                expected("@LABEL", "store rx, ");
 
             label_addr = get_label_addr(token);
-            if (label_addr == -1) {
-                errorstr = malloc(strlen(token) + 17);
-                sprintf(errorstr,
-                    "LABEL %s NOT FOUND",
-                    ++token);
-                assembly_error(errorstr, linenum);
-            }
+            if (label_addr == -1)
+                label_not_found(++token);
 
             fputc(0x03, fpbin);
             fputc(label_addr >> 8, fpbin);
@@ -459,14 +447,11 @@ void pass2() {
         else if (!strcmp(token, "memput")) {
             token = strtok(NULL, " ,\t");
             if (!token)
-                assembly_error("EXPECTED rx AFTER `memput'",
-                    linenum);
+                expected("rx", "memput");
 
             i = base16_decode(token);
             if (i > 0xF)
-                assembly_error("`memput r' ARGUMENT CANNOT "
-                    "BE GREATER THAN #F",
-                    linenum);
+                argument_size("memput r", "#F");
 
             fputc(0x02, fpbin);
             fputc(i << 4, fpbin);
@@ -483,29 +468,23 @@ void pass2() {
             // 04mmmm
             token = strtok(NULL, " \t");
             if (!token)
-                assembly_error("EXPECTED #ADDR OR "
-                    "@LABEL AFTER `jump'", linenum);
+                expected("#ADDR OR @LABEL", "jump");
+
             switch (*token) {
                 case '#':
                     label_addr = base16_decode(token);
                     if (i > 0xFFFF)
-                        assembly_error("`jump #' ARGUMENT CANNOT "
-                            "BE GREATER THAN #FFFF",
-                            linenum);
+                        argument_size("jump #", "#FFFF");
+
                     break;
                 case '@':
                     label_addr = get_label_addr(token);
-                    if (label_addr == -1) {
-                        errorstr = malloc(strlen(token) + 17);
-                        sprintf(errorstr,
-                            "LABEL %s NOT FOUND",
-                            ++token);
-                        assembly_error(errorstr, linenum);
-                    }
+                    if (label_addr == -1)
+                        label_not_found(++token);
+
                     break;
                 default:
-                    assembly_error("EXPECTED #ADDR OR "
-                        "@LABEL AFTER `jump'", linenum);
+                    expected("#ADDR OR @LABEL", "jump");
                     break;
             }
             fputc(0x04, fpbin);
@@ -523,8 +502,8 @@ void pass2() {
             // 05000
             token = strtok(NULL, " \t");
             if (token)
-                assembly_error("INSTRUCTION `print0' "
-                    "TAKES NO ARGUMENTS", linenum);
+                expected("NOTHING", "print0");
+
             fputc(0x05, fpbin);
             fputc(0x00, fpbin);
             fputc(0x00, fpbin);
@@ -540,18 +519,14 @@ void pass2() {
             // 05000
             token = strtok(NULL, " \t");
             if (!token)
-                assembly_error("EXPECTED #NUM AFTER `print'",
-                    linenum);
+                expected("#NUM", "print");
 
             if (*token != '#')
-                assembly_error("EXPECTED #NUM AFTER `print'",
-                    linenum);
+                expected("#NUM", "print");
 
             i = base16_decode(token);
             if (i > 0xFFF)
-                assembly_error("`print #' ARGUMENT "
-                    "CANNOT BE GREATER THAN #FFF",
-                    linenum);
+                argument_size("print #", "#FFF");
 
             fputc(0x05, fpbin);
             fputc(0x10 | (i >> 8), fpbin);
@@ -568,8 +543,8 @@ void pass2() {
             // 05000
             token = strtok(NULL, " \t");
             if (token)
-                assembly_error("INSTRUCTION `printi' "
-                    "TAKES NO ARGUMENTS", linenum);
+                expected("NOTHING", "printi");
+
             fputc(0x05, fpbin);
             fputc(0x30, fpbin);
             fputc(0x00, fpbin);
@@ -585,16 +560,15 @@ void pass2() {
             // 052nnn
             token = strtok(NULL, " \t");
             if (!token)
-                assembly_error("EXPECTED #NUM AFTER `putchar'",
-                    linenum);
+                expected("#NUM", "putchar");
 
             if (*token != '#')
-                assembly_error("EXPECTED #NUM AFTER `putchar'",
-                    linenum);
+                expected("#NUM", "putchar");
+
             i = base16_decode(token);
             if (i > 0xFF)
-                assembly_error("`putchar #' ARGUMENT CANNOT "
-                    "BE GREATER THAN #FF", linenum);
+                argument_size("putchar #", "#FF");
+
             fputc(0x05, fpbin);
             fputc(0x20, fpbin);
             fputc(i, fpbin);
@@ -610,8 +584,8 @@ void pass2() {
             // 060000
             token = strtok(NULL, " \t");
             if (token)
-                assembly_error("INSTRUCTION `input' "
-                    "TAKES NO ARGUMENTS", linenum);
+                expected("NOTHING", "input");
+
             fputc(0x06, fpbin);
             fputc(0x00, fpbin);
             fputc(0x00, fpbin);
@@ -626,34 +600,31 @@ void pass2() {
         else if (!strcmp(token, "ifeq")) {
             token = strtok(NULL, " ,\t");
             if (!token)
-                assembly_error("EXPECTED rx AFTER `ifeq'",
-                    linenum);
+                expected("rx", "ifeq");
+
+            if (*token != 'r')
+                expected("rx", "ifeq");
 
             x = token[1];
             if (!x)
-                assembly_error("EXPECTED rx AFTER `ifeq'",
-                    linenum);
+                expected("rx", "ifeq");
 
             // Make sure user input is correct
             byte = base16_decode(token);
             if (byte > 0xF)
-                assembly_error("`ifeq r' ARGUMENT CANNOT"
-                    " BE GREATER THAN #F", linenum);
+                argument_size("ifeq r", "#F");
 
             token = strtok(NULL, " \t");
 
             if (!token)
-                assembly_error("EXPECTED #NUM OR "
-                    "ry AFTER `ifeq rx, '",
-                    linenum);
+                expected("#NUM OR ry", "ifeq rx, ");
 
             switch (*token) {
                 case '#':
                     i = base16_decode(token);
                     if (i > 0xFFF)
-                        assembly_error("`ifeq rx, #' ARGUMENT "
-                                    "CANNOT BE GREATER THAN #FFF",
-                                    linenum);
+                        argument_size("ifeq rx, #", "#FFF");
+
                     fputc(0x08, fpbin);
                     byte <<= 4;
                     fputc(byte | (i >> 8), fpbin);
@@ -663,9 +634,8 @@ void pass2() {
                 case 'r':
                     i = base16_decode(token);
                     if (i > 0xF)
-                        assembly_error("`ifeq rx, r' ARGUMENT "
-                                    "CANNOT BE GREATER THAN #F",
-                                    linenum);
+                        argument_size("ifeq rx, r", "#F");
+
                     fputc(0x09, fpbin);
                     byte <<= 4;
                     fputc(byte | i, fpbin);
@@ -673,9 +643,7 @@ void pass2() {
                     break;
 
                 default:
-                    assembly_error("EXPECTED #NUM OR "
-                        "ry AFTER `ifeq rx, '",
-                        linenum);
+                    expected("#NUM OR ry", "ifeq rx, ");
                     break;
             }
 
@@ -689,34 +657,31 @@ void pass2() {
         else if (!strcmp(token, "ifneq")) {
             token = strtok(NULL, " ,\t");
             if (!token)
-                assembly_error("EXPECTED rx AFTER `ifneq'",
-                    linenum);
+                expected("rx", "ifneq");
+
+            if (*token != 'r')
+                expected("rx", "ifneq");
 
             x = token[1];
             if (!x)
-                assembly_error("EXPECTED rx AFTER `ifneq'",
-                    linenum);
+                expected("rx", "ifneq");
 
             // Make sure user input is correct
             byte = base16_decode(token);
             if (byte > 0xF)
-                assembly_error("`ifneq r' ARGUMENT CANNOT"
-                    " BE GREATER THAN #F", linenum);
+                argument_size("ifneq #", "#F");
 
             token = strtok(NULL, " \t");
 
             if (!token)
-                assembly_error("EXPECTED #NUM OR "
-                    "ry AFTER `ifneq rx, '",
-                    linenum);
+                expected("#NUM OR ry", "ifneq rx, ");
 
             switch (*token) {
                 case '#':
                     i = base16_decode(token);
                     if (i > 0xFFF)
-                        assembly_error("`ifneq rx, #' ARGUMENT "
-                                    "CANNOT BE GREATER THAN #FFF",
-                                    linenum);
+                        argument_size("ifneq rx, #", "#FFF");
+
                     fputc(0x07, fpbin);
                     byte <<= 4;
                     fputc(byte | (i >> 8), fpbin);
@@ -726,9 +691,8 @@ void pass2() {
                 case 'r':
                     i = base16_decode(token);
                     if (i > 0xF)
-                        assembly_error("`ifneq rx, r' ARGUMENT "
-                                    "CANNOT BE GREATER THAN #F",
-                                    linenum);
+                        argument_size("ifneq rx, r", "#F");
+
                     fputc(0x09, fpbin);
                     byte <<= 4;
                     fputc(byte | i, fpbin);
@@ -736,9 +700,7 @@ void pass2() {
                     break;
 
                 default:
-                    assembly_error("EXPECTED #NUM OR "
-                        "ry AFTER `ifneq rx, '",
-                        linenum);
+                    expected("#NUM OR ry", "ifneq rx, ");
                     break;
             }
 
@@ -752,20 +714,16 @@ void pass2() {
         else if (!strcmp(token, "add")) {
             token = strtok(NULL, " ,\t");
             if (!token)
-                assembly_error("EXPECTED rx OR [X] "
-                                "AFTER `add'", linenum);
+                expected("rx or [X]", "add");
 
             if (*token == 'r') {
                 i = base16_decode(token);
                 if (i > 0xF)
-                    assembly_error("`add r' ARGUMENT CANNOT "
-                        "BE GREATER THAN #F", linenum);
+                    argument_size("add r", "#F");
 
                 token = strtok(NULL, " \t");
                 if (!token)
-                    assembly_error("EXPECTED ry OR #NUM AFTER "
-                        "`add rx, '",
-                        linenum);
+                    expected("ry or #NUM", "add rx, ");
 
                 byte = i;
 
@@ -773,9 +731,7 @@ void pass2() {
                     case '#':
                         i = base16_decode(token);
                         if (i > 0xFFF)
-                            assembly_error("`add rx, #' ARGUMENT "
-                                "CANNOT BE GREATER THAN #FFF",
-                                linenum);
+                            argument_size("add rx, #", "#FFF");
 
                         fputc(0x0C, fpbin);
                         byte <<= 4;
@@ -786,9 +742,7 @@ void pass2() {
                     case 'r':
                         i = base16_decode(token);
                         if (i > 0xF)
-                            assembly_error("`add rx, r' ARGUMENT "
-                                "CANNOT BE GREATER THAN #F",
-                                linenum);
+                            argument_size("add rx, r", "#F");
 
                         fputc(0x10, fpbin);
                         byte <<= 4;
@@ -797,26 +751,26 @@ void pass2() {
                         break;
 
                     default:
-                        assembly_error("EXPECTED ry OR #NUM "
-                            "AFTER `add rx, '", linenum);
+                        expected("ry or #NUM", "add rx, ");
                         break;
                 }
 
             } else if (!strcmp(token, "[X]")) {
                 token = strtok(NULL, " \t");
                 if (!token)
-                    assembly_error("EXPECTED rx OR #NUM "
-                                    "AFTER `add [X], '", linenum);
+                    expected("rx or #NUM", "add [X], ");
+
                 if (*token == '#') {
                     i = base16_decode(token);
                     if (i > 0xFFFF)
-                        assembly_error("`add [X], #' ARGUMENT CANNOT "
-                            "BE GREATER THAN #FFFF", linenum);
+                        argument_size("add [X], #", "#FFFF");
+
                     fputc(0x0A, fpbin);
                     fputc(i >> 8, fpbin);
                     fputc(i & 0xFF, fpbin);
                 }
-            }
+            } else
+                expected("rx or [X]", "add");
 
         }
         
@@ -828,20 +782,16 @@ void pass2() {
         else if (!strcmp(token, "sub")) {
             token = strtok(NULL, " ,\t");
             if (!token)
-                assembly_error("EXPECTED rx OR [X] "
-                                "AFTER `sub'", linenum);
+                expected("rx or [X]", "sub");
 
             if (*token == 'r') {
                 i = base16_decode(token);
                 if (i > 0xF)
-                    assembly_error("`sub r' ARGUMENT CANNOT "
-                        "BE GREATER THAN #F", linenum);
+                    argument_size("sub r", "#F");
 
                 token = strtok(NULL, " \t");
                 if (!token)
-                    assembly_error("EXPECTED ry OR #NUM AFTER "
-                        "`sub rx, '",
-                        linenum);
+                    expected("ry or #NUM", "sub rx, ");
 
                 byte = i;
 
@@ -849,9 +799,7 @@ void pass2() {
                     case '#':
                         i = base16_decode(token);
                         if (i > 0xFFF)
-                            assembly_error("`sub rx, #' ARGUMENT "
-                                "CANNOT BE GREATER THAN #FFF",
-                                linenum);
+                            argument_size("sub rx, #", "#FFF");
 
                         fputc(0x0D, fpbin);
                         byte <<= 4;
@@ -862,9 +810,7 @@ void pass2() {
                     case 'r':
                         i = base16_decode(token);
                         if (i > 0xF)
-                            assembly_error("`sub rx, r' ARGUMENT "
-                                "CANNOT BE GREATER THAN #F",
-                                linenum);
+                            argument_size("sub rx, r", "#F");
 
                         fputc(0x10, fpbin);
                         byte <<= 4;
@@ -873,26 +819,25 @@ void pass2() {
                         break;
 
                     default:
-                        assembly_error("EXPECTED ry OR #NUM "
-                            "AFTER `sub rx, '", linenum);
+                        expected("ry or #NUM", "sub rx, ");
                         break;
                 }
 
             } else if (!strcmp(token, "[X]")) {
                 token = strtok(NULL, " \t");
                 if (!token)
-                    assembly_error("EXPECTED rx OR #NUM "
-                                    "AFTER `sub [X], '", linenum);
+                    expected("rx or #NUM", "sub [X], ");
+
                 if (*token == '#') {
                     i = base16_decode(token);
                     if (i > 0xFFFF)
-                        assembly_error("`sub [X], ' ARGUMENT CANNOT "
-                            "BE GREATER THAN #FFFF", linenum);
+                        argument_size("sub [X], #", "#FFFF");
                     fputc(0x0B, fpbin);
                     fputc(i >> 8, fpbin);
                     fputc(i & 0xFF, fpbin);
                 }
-            }
+            } else
+                expected("rx or [X]", "sub");
 
         }
         
@@ -904,20 +849,16 @@ void pass2() {
         else if (!strcmp(token, "mul")) {
             token = strtok(NULL, " ,\t");
             if (!token)
-                assembly_error("EXPECTED rx "
-                                "AFTER `mul'", linenum);
+                expected("rx", "mul");
 
             if (*token == 'r') {
                 i = base16_decode(token);
                 if (i > 0xF)
-                    assembly_error("`mul r' ARGUMENT CANNOT "
-                        "BE GREATER THAN #F", linenum);
+                    argument_size("mul r", "#F");
 
                 token = strtok(NULL, " \t");
                 if (!token)
-                    assembly_error("EXPECTED ry OR #NUM AFTER "
-                        "`mul rx, '",
-                        linenum);
+                    expected("ry OR #NUM", "mul rx, ");
 
                 byte = i;
 
@@ -925,9 +866,7 @@ void pass2() {
                     case '#':
                         i = base16_decode(token);
                         if (i > 0xFFF)
-                            assembly_error("`mul rx, #' ARGUMENT "
-                                "CANNOT BE GREATER THAN #FFF",
-                                linenum);
+                            argument_size("mul rx, #", "#FFF");
 
                         fputc(0x0E, fpbin);
                         byte <<= 4;
@@ -938,9 +877,7 @@ void pass2() {
                     case 'r':
                         i = base16_decode(token);
                         if (i > 0xF)
-                            assembly_error("`mul rx, r' ARGUMENT "
-                                "CANNOT BE GREATER THAN #F",
-                                linenum);
+                            argument_size("mul rx, r", "#F");
 
                         fputc(0x10, fpbin);
                         byte <<= 4;
@@ -949,12 +886,12 @@ void pass2() {
                         break;
 
                     default:
-                        assembly_error("EXPECTED ry OR #NUM "
-                            "AFTER `mul rx, '", linenum);
+                        expected("ry OR #NUM", "mul rx, ");
                         break;
                 }
 
-            }
+            } else
+                expected("rx", "mul");
 
         }
         
@@ -966,20 +903,16 @@ void pass2() {
         else if (!strcmp(token, "div")) {
             token = strtok(NULL, " ,\t");
             if (!token)
-                assembly_error("EXPECTED rx "
-                                "AFTER `div'", linenum);
+                expected("rx", "div");
 
             if (*token == 'r') {
                 i = base16_decode(token);
                 if (i > 0xF)
-                    assembly_error("`div r' ARGUMENT CANNOT "
-                        "BE GREATER THAN #F", linenum);
+                    argument_size("div r", "#F");
 
                 token = strtok(NULL, " \t");
                 if (!token)
-                    assembly_error("EXPECTED ry OR #NUM AFTER "
-                        "`div rx, '",
-                        linenum);
+                    expected("ry OR #NUM", "div rx, ");
 
                 byte = i;
 
@@ -987,9 +920,7 @@ void pass2() {
                     case '#':
                         i = base16_decode(token);
                         if (i > 0xFFF)
-                            assembly_error("`div rx, #' ARGUMENT "
-                                "CANNOT BE GREATER THAN #FFF",
-                                linenum);
+                            argument_size("div rx, #", "#FFF");
 
                         fputc(0x0F, fpbin);
                         byte <<= 4;
@@ -1000,9 +931,7 @@ void pass2() {
                     case 'r':
                         i = base16_decode(token);
                         if (i > 0xF)
-                            assembly_error("`div rx, r' ARGUMENT "
-                                "CANNOT BE GREATER THAN #F",
-                                linenum);
+                            argument_size("div rx, r", "#F");
 
                         fputc(0x10, fpbin);
                         byte <<= 4;
@@ -1011,12 +940,12 @@ void pass2() {
                         break;
 
                     default:
-                        assembly_error("EXPECTED ry OR #NUM "
-                            "AFTER `div rx, '", linenum);
+                        expected("ry OR #NUM", "div rx, ");
                         break;
                 }
 
-            }
+            } else
+                expected("rx", "div");
 
         }
         
@@ -1028,25 +957,23 @@ void pass2() {
         else if (!strcmp(token, "call")) {
             token = strtok(NULL, " ,\t");
             if (!token)
-                assembly_error("EXPECTED @LABEL OR #ADDR "
-                                "AFTER `call'", linenum);
+                expected("@LABEL OR #ADDR", "call");
 
             switch (*token) {
                 case '@':
                     label_addr = get_label_addr(token);
-                    if (label_addr == -1) {
-                    fprintf(stderr, "*** LINE %i: "
-                        "LABEL %s NOT FOUND\n",
-                        linenum + 1, ++token);
-                    exit(2);
-                    }
+                    if (label_addr == -1)
+                        label_not_found(++token);
+
                     break;
                 case '#':
                     label_addr = base16_decode(token);
                     if (label_addr > 0xFFFF)
-                        assembly_error("`call' ARGUMENT "
-                            "CANNOT BE GREATER THAN #FFFF",
-                            linenum);
+                        argument_size("call #", "#FFFF");
+                    break;
+
+                default:
+                    expected("@LABEL OR #ADDR", "call");
                     break;
             }
             fputc(0x11, fpbin);
@@ -1063,8 +990,7 @@ void pass2() {
         else if (!strcmp(token, "ret")) {
             token = strtok(NULL, " ,\t");
             if (token)
-                assembly_error("`ret' TAKES NO ARGUMENTS",
-                    linenum);
+                expected("NOTHING", "ret");
 
             fputc(0x12, fpbin);
             fputc(0x00, fpbin);
@@ -1079,15 +1005,12 @@ void pass2() {
 
         else if (!strcmp(token, "switchx")) {
             token = strtok(NULL, " ,\t");
-            if (!token)
-                assembly_error("EXPECTED #NUM AFTER `switchx`",
-                    linenum);
+            if (!token || *token != '#')
+                expected("#NUM", "switchx");
 
             i = base16_decode(token);
             if (i > 0xF)
-                assembly_error("`switchx' ARGUMENT "
-                    "CANNOT BE GREATER THAN #F",
-                    linenum);
+                argument_size("switchx #", "#F");
 
             fputc(0x13, fpbin);
             fputc(0x00, fpbin);
@@ -1149,16 +1072,14 @@ void pass2() {
         else if (!strcmp(token, "char")) {
             token = strtok(NULL, " \t");
             if (!token)
-                assembly_error("EXPECTED #NUM AFTER `char'",
-                    linenum);
+                expected("#NUM", "char");
 
             if (*token != '#')
-                assembly_error("EXPECTED #NUM AFTER `char'",
-                    linenum);
+                expected("#NUM", "char");
+
             i = base16_decode(token);
             if (i > 0xFF)
-                assembly_error("`char #' ARGUMENT CANNOT "
-                    "BE GREATER THAN #FF", linenum);
+                argument_size("char #", "#FF");
             fputc(i, fpbin);
 
         }
@@ -1168,16 +1089,11 @@ void pass2() {
          ************************************************/
 
 
-        else {
-            errorstr = malloc(strlen(token) + 24);
-            sprintf(errorstr,
-                "UNKNOWN INSTRUCTION: `%s'",
-                token);
-            assembly_error(errorstr, linenum);
-        }
+        else
+            inst_unknown(token);
+
     }
     free(label);
-    free(errorstr);
 }
 
 char* get_bin_name(char* input) {
@@ -1203,6 +1119,7 @@ char* get_bin_name(char* input) {
 }
 
 int main(int argc, char* argv[]) {
+    PROGNAME = argv[0];
     char* fnasm = NULL;
     char* fnbin = NULL;
     int c;
@@ -1220,11 +1137,12 @@ int main(int argc, char* argv[]) {
             case '?':
                 if (isprint(optopt))
                     fprintf(stderr,
-                        "Unknown option: `-%c'.\n",
+                        "%s: unknown option: `-%c'.\n", PROGNAME,
                         optopt);
                 else
                     fprintf(stderr,
-                        "Unknown option character: `\\x%x'.\n",
+                        "%s: unknown option character: `\\x%x'.\n",
+                        PROGNAME,
                         optopt);
                 return 1;
                 break;
@@ -1252,7 +1170,7 @@ int main(int argc, char* argv[]) {
     if (!fpasm || ferror(fpasm)) {
         fprintf(stderr, "%s: failed to open "
             "file `%s' for reading.\n",
-            argv[0],
+            PROGNAME,
             fnasm);
         return 1;
     }
@@ -1261,7 +1179,7 @@ int main(int argc, char* argv[]) {
     if (!fpbin || ferror(fpbin)) {
         fprintf(stderr, "%s: failed to open "
             "file `%s' for writing.\n",
-            argv[0],
+            PROGNAME,
             fnbin);
         return 1;
     }
