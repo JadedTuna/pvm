@@ -11,7 +11,11 @@ char *USAGE =
 "usage: pvm [-hv] file.bin\n"
 "options:\n"
 "   -h              print this help message\n"
-"   -v              print version\n";
+"   -d              at the end of execution print debugging info\n"
+"   -m file.bin     at the end of execution du"
+                        "mp memory into a file\n"
+"   -v              print version\n"
+"   -i              print each executed opcode\n";
 
 void print_usage() {
     fprintf(stderr, USAGE);
@@ -19,7 +23,7 @@ void print_usage() {
 }
 
 void print_version() {
-    printf("pvm version %s\n", __PVM_VERSION__);
+    printf("%s: pvm version %s\n", PROGNAME, __PVM_VERSION__);
     exit(0);
 }
 
@@ -46,21 +50,31 @@ size_t readline(char line[], size_t size) {
     return i;
 }
 
-void debug(FLAG dflag, FLAG mflag) {
+void debug(FLAG dflag, char* mfile) {
     if (dflag) {
         unsigned char i;
-        for (i=0; i<=0xF; i++) printf("0x%X --> %i\n", i, reg[i]);
-        printf("\nX: %i, %i\n", (int)(X - arrayX), *X);
-        printf("pc: %i\n", pc);
-        if (mflag) printf("\n");
+        for (i=0; i<=0xF; i++) printf("%s: 0x%X --> %i\n",
+            PROGNAME,
+            i,
+            reg[i]);
+        printf("\n%s: X: %i, %i\n",
+            PROGNAME, (int)(X - arrayX), *X);
+        printf("%s: pc: %i\n", PROGNAME, pc);
+        if (mfile) printf("\n");
     }
 
-    if (mflag) {
+    if (mfile) {
+        FILE* fpmem = fopen(mfile, "wb");
+        if (!fpmem) {
+            fprintf(stderr, "%s: failed to open memdump file %s.",
+                    PROGNAME, mfile);
+            exit(EXIT_FAILURE);
+        }
         int j;
         for (j=0; j<MEMSIZE; j++) {
-            if (memory[j] != 0)
-                printf("0x%04X: 0x%02X\n", j, memory[j]);
+            fputc(memory[j], fpmem);
         }
+        fclose(fpmem);
     }
 }
 
@@ -94,7 +108,7 @@ void execute(FLAG iflag) {
         k    = opcode & 0xF;
 
         if (iflag)
-            printf("@%04X: 0x%06lX\n", pc - 3, opcode);
+            printf("%s: @%04X: 0x%06lX\n", PROGNAME, pc - 3, opcode);
 
         switch (inst) {
             case 0x0:
@@ -146,8 +160,9 @@ void execute(FLAG iflag) {
 
                     default:
                         fprintf(stderr,
-                            "unknown opcode at @%04X: 0x%06lX\n",
-                            pc - 3, opcode);
+                            "%s: unknown opcode at "
+                            "@%04X: 0x%06lX\n",
+                            PROGNAME, pc - 3, opcode);
                         return;
                         break;
                 }
@@ -190,6 +205,14 @@ void execute(FLAG iflag) {
                         // print one integer from address [X]
                         printf("%i", memory[*X]);
                         break;
+
+                    default:
+                        fprintf(stderr,
+                            "%s: unknown opcode at "
+                            "@%04X: 0x%06lX\n",
+                            PROGNAME, pc - 3, opcode);
+                        return;
+                        break;
                 }
                 break;
             case 0x6:
@@ -220,6 +243,14 @@ void execute(FLAG iflag) {
                     case 0x1:
                         // skip next opcode if rx != ry
                         if (reg[x] != reg[y]) pc += 3;
+                        break;
+
+                    default:
+                        fprintf(stderr,
+                            "%s: unknown opcode at "
+                            "@%04X: 0x%06lX\n",
+                            PROGNAME, pc - 3, opcode);
+                        return;
                         break;
                 }
                 break;
@@ -287,10 +318,12 @@ void execute(FLAG iflag) {
                         reg[y] &= 0xFF;
                         reg[x] = reg[y];
                         break;
+
                     default:
                         fprintf(stderr,
-                            "unknown opcode at @%04X: 0x%06lX\n",
-                            pc - 3, opcode);
+                            "%s: unknown opcode at "
+                            "@%04X: 0x%06lX\n",
+                            PROGNAME, pc - 3, opcode);
                         return;
                         break;
                 }
@@ -311,10 +344,11 @@ void execute(FLAG iflag) {
                 // switch X to &arrayX[k]
                 X = &arrayX[k & 0xF];
                 break;
+
             default:
                 fprintf(stderr,
-                    "unknown opcode at @%04X: 0x%06lX\n",
-                    pc - 3, opcode);
+                    "%s: unknown opcode at @%04X: 0x%06lX\n",
+                    PROGNAME, pc - 3, opcode);
                 return;
                 break;
         }
@@ -322,15 +356,16 @@ void execute(FLAG iflag) {
 }
 
 int main(int argc, char* argv[]) {
+    PROGNAME = argv[0];
     FLAG  dflag = 0;
-    FLAG  mflag = 0;
     FLAG  iflag = 0;
+    char* mfile = NULL;
     char* fn = NULL;
     int c;
 
     opterr = 0;
 
-    while ((c = getopt(argc, argv, "hdmvi")) != -1)
+    while ((c = getopt(argc, argv, "hdm:vi")) != -1)
         switch (c) {
             case 'h':
                 print_usage();
@@ -339,7 +374,7 @@ int main(int argc, char* argv[]) {
                 dflag = 1;
                 break;
             case 'm':
-                mflag = 1;
+                mfile = optarg;
                 break;
             case 'v':
                 print_version();
@@ -348,18 +383,23 @@ int main(int argc, char* argv[]) {
                 iflag = 1;
                 break;
             case '?':
-                if (isprint(optopt))
+                if (optopt == 'm')
                     fprintf(stderr,
-                        "Unknown option: `-%c'.\n",
-                        optopt);
+                        "%s: option `m' expects an argument.\n",
+                        PROGNAME);
+                else if (isprint(optopt))
+                    fprintf(stderr,
+                        "%s: unknown option: `-%c'.\n",
+                        PROGNAME, optopt);
                 else
                     fprintf(stderr,
-                        "Unknown option character: `\\x%x'.\n",
-                        optopt);
+                        "%s: unknown option character: `\\x%x'.\n",
+                        PROGNAME, optopt);
                 return 1;
                 break;
             default:
                 abort();
+                break;
         }
 
     argc -= optind;
@@ -374,11 +414,13 @@ int main(int argc, char* argv[]) {
 
     FILE* fp = fopen(fn, "rb");
     if (!fp) {
-        fprintf(stderr, "Failed to open file: `%s'.\n", fn);
+        fprintf(stderr, "%s: failed to open file: `%s'.\n",
+                PROGNAME, fn);
         return 1;
     }
     if (load(fp)) {
-        fprintf(stderr, "Memory overflow (file too big).\n");
+        fprintf(stderr, "%s: memory overflow (file too big).\n",
+                PROGNAME);
         return 1;
     }
     fclose(fp);
@@ -386,7 +428,7 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, ctrl_c);
     execute(iflag);
 
-    debug(dflag, mflag);
+    debug(dflag, mfile);
 
     exit(exit_code);
 }
