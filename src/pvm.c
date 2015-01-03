@@ -1,4 +1,4 @@
-// Pythonista Virtual Machine - source file
+// P Virtual Machine - source file
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
