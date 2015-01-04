@@ -10,12 +10,12 @@ char *USAGE =
 "   -h              print this help message\n"
 "   -v              print version\n";
 
-void print_usage() {
+void print_usage(void) {
     fprintf(stderr, USAGE);
     exit(1);
 }
 
-void print_version() {
+void print_version(void) {
     printf("%s: pasm version %s\n", PROGNAME,
         __PASM_VERSION__);
     exit(EXIT_SUCCESS);
@@ -51,8 +51,8 @@ void inst_unknown(char* inst) {
 }
 
 char* get_string(char* token) {
-    int c, i;
-    char do_count;
+    int c = 0, i = 0;
+    char do_count = 0;
     size_t size = 0;
     size_t start = 0;
     size_t last_quote = 0;
@@ -72,12 +72,8 @@ char* get_string(char* token) {
     token += start;
     char* string = malloc(last_quote - start);
     strncpy(string, token, last_quote - start - 1);
-    
+    string[last_quote - start - 1] = '\0';
     return string;
-}
-
-size_t quotelen(char* token) {
-    return strlen(get_string(token));
 }
 
 unsigned int get_label_addr(char* token) {
@@ -120,7 +116,7 @@ unsigned int base16_decode(char* token) {
 /* Read file line by line;
  * Generate labels' lookup table
  */
-void pass1() {
+void pass1(void) {
     int index = 0;
     unsigned int i = 0;
     linenum = 0;
@@ -178,7 +174,10 @@ void pass1() {
             if (!token)
                 expected("\"...\"", "string");
 
-            size_t stringlen = quotelen(token);
+            char* temp = get_string(token);
+            int stringlen = strlen(temp);
+            free(temp);
+
             if (stringlen == -1)
                 expected("\"...\"", "string");
 
@@ -191,7 +190,10 @@ void pass1() {
             if (!token)
                 expected("\"...\"", "stringn");
 
-            size_t stringlen = quotelen(token);
+            char* temp = get_string(token);
+            int stringlen = strlen(temp);
+            free(temp);
+
             if (stringlen == -1)
                 expected("\"...\"", "stringn");
 
@@ -202,8 +204,11 @@ void pass1() {
             token = strtok(NULL, "\0");
             if (!token)
                 expected("\"...\"", "stringl");
+            
+            char* temp = get_string(token);
+            int stringlen = strlen(temp);
+            free(temp);
 
-            size_t stringlen = quotelen(token);
             if (stringlen == -1)
                 expected("\"...\"", "stringl");
 
@@ -230,20 +235,20 @@ void pass1() {
 /* Parse assembly line by line;
  * Generate bytecode
  */
-void pass2() {
-    int i;
-    size_t _i;
-    size_t toksize;
-    unsigned int label_addr;
+void pass2(void) {
+    int i = 0;
+    size_t _i = 0;
+    size_t toksize = 0;
+    int label_addr = 0;
     char *label = 0;
     char *string = 0;
     unsigned int linenum = 0;
-    unsigned char x;
+    unsigned char x = 0;
 
     char* line;
     char* token;
 
-    unsigned char byte;
+    unsigned char byte = 0;
 
     for (_i=0;_i<MAXLINES;_i++,linenum++) {
         line = words[_i];
@@ -1026,7 +1031,9 @@ void pass2() {
         else if (!strcmp(token, "string")) {
             // store string as a series of bytes
             token = strtok(NULL, "\0");
+            
             string = get_string(token);
+
             for (;*string != '\0';string++)
                 fputc(*string, fpbin);
             fputc('\0', fpbin); // Mark string's end
@@ -1042,7 +1049,9 @@ void pass2() {
             // store string as a series of bytes
             // but don't put \0 at the end
             token = strtok(NULL, "\0");
+
             string = get_string(token);
+
             for (;*string != '\0';string++)
                 fputc(*string, fpbin);
 
@@ -1056,7 +1065,9 @@ void pass2() {
         else if (!strcmp(token, "stringl")) {
             // store string as a series of bytes
             token = strtok(NULL, "\0");
+
             string = get_string(token);
+
             for (;*string != '\0';string++)
                 fputc(*string, fpbin);
             fputc('\n', fpbin); // New line
