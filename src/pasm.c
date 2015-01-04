@@ -37,7 +37,7 @@ void argument_size(char* inst, char* size) {
 }
 
 void label_not_found(char* label) {
-    fprintf(stderr, "%s: *** LINE %i: LABEL %s NOT FOUND",
+    fprintf(stderr, "%s: *** LINE %i: LABEL %s NOT FOUND\n",
             PROGNAME,
             linenum, label);
     exit(EXIT_ASM_ERROR);
@@ -76,22 +76,21 @@ char* get_string(char* token) {
     return string;
 }
 
-unsigned int get_label_addr(char* token) {
+int get_label_addr(char* token) {
     token++; // Skip @
-    unsigned int addr = -1;
+    int addr = -1;
     size_t i;
     Label label;
 
     for (i=0;;i++) {
         label = lookup[i];
-        if (!label.label) break;
+        if (!label.label || !strcmp(label.label, "")) break;
 
         if (!strcmp(label.label, token)) {
             addr = label.address;
             break;
         }
     }
-
     return addr;
 }
 
@@ -152,7 +151,7 @@ void pass1(void) {
         linecp = realloc(linecp, strlen(line) + 1);
         memset(linecp, '\0', strlen(line) + 1);
         strcpy(linecp, line);
-        char* token = strtok(linecp, " \t");
+        char* token = strtok(linecp, " \t\n");
         if (!token) continue;
 
         toksize = strlen(token);
@@ -165,7 +164,7 @@ void pass1(void) {
 
             lookup[LOOKUP_PT++] = label;
 
-            token = strtok(NULL, " \t");
+            token = strtok(NULL, " \t\n");
             if (token) address += 3;
 
         } else if (!strcmp(token, "string")) {
@@ -242,8 +241,8 @@ void pass2(void) {
     int label_addr = 0;
     char *label = 0;
     char *string = 0;
-    unsigned int linenum = 0;
     unsigned char x = 0;
+    linenum = 0;
 
     char* line;
     char* token;
@@ -253,11 +252,11 @@ void pass2(void) {
     for (_i=0;_i<MAXLINES;_i++,linenum++) {
         line = words[_i];
         if (!line) break;
-        token = strtok(line, " \t");
+        token = strtok(line, " \t\n");
         if (!token) continue;
         toksize = strlen(token);
         if (token[toksize - 1] == ':') {
-            token = strtok(NULL, " \t");
+            token = strtok(NULL, " \t\n");
             if (!token) continue;
         }
 
@@ -268,7 +267,7 @@ void pass2(void) {
 
         if (!strcmp(token, "halt")) {
             // 0000
-            token = strtok(NULL, " ,\t");
+            token = strtok(NULL, " ,\t\n");
             if (token) {
                 i = base16_decode(token);
                 if (i > 0xFFFF)
@@ -287,13 +286,13 @@ void pass2(void) {
 
 
         else if (!strcmp(token, "load")) {
-            token = strtok(NULL, " ,\t");
+            token = strtok(NULL, " ,\t\n");
             if (!token)
                 expected("rx OR [X]", "load");
 
             if (!strcmp(token, "[X]")) {
                 // 5mmm
-                token = strtok(NULL, " \t");
+                token = strtok(NULL, " \t\n");
                 if (!token)
                     expected("#NUM OR @LABEL", "load [X], ");
 
@@ -304,7 +303,6 @@ void pass2(void) {
                         strcpy(label, token);
 
                         label_addr = get_label_addr(token);
-
                         if (label_addr == -1)
                             label_not_found(++label);
 
@@ -316,6 +314,17 @@ void pass2(void) {
                         if (label_addr > 0xFFFF)
                             argument_size("load [X], #", "#FFFF");
 
+                        break;
+
+                    case 'r':
+                        // Load value into memory
+                        i = base16_decode(token);
+                        if (i > 0xF)
+                            argument_size("load [X], r", "#F");
+
+                        fputc(0x02, fpbin);
+                        fputc(i << 4, fpbin);
+                        fputc(0x03, fpbin);
                         break;
 
                     default:
@@ -338,7 +347,7 @@ void pass2(void) {
                 if (byte > 0xF)
                     argument_size("load r", "#F");
 
-                token = strtok(NULL, " \t");
+                token = strtok(NULL, " \t\n");
 
                 if (!token)
                     expected("ry, #NUM OR [X]", "load rx, ");
@@ -380,7 +389,7 @@ void pass2(void) {
 
 
         else if (!strcmp(token, "fill")) {
-            token = strtok(NULL, " ,\t");
+            token = strtok(NULL, " ,\t\n");
             if (!token)
                 expected("rx", "fill");
 
@@ -388,7 +397,7 @@ void pass2(void) {
             if (i > 0xF)
                 argument_size("fill r", "#F");
 
-            token = strtok(NULL, " \t");
+            token = strtok(NULL, " \t\n");
             if (!token)
                 expected("@LABEL", "fill rx, ");
 
@@ -415,7 +424,7 @@ void pass2(void) {
 
 
         else if (!strcmp(token, "store")) {
-            token = strtok(NULL, " ,\t");
+            token = strtok(NULL, " ,\t\n");
             if (!token)
                 expected("rx", "store");
 
@@ -423,7 +432,7 @@ void pass2(void) {
             if (i > 0xF)
                 argument_size("store r", "#F");
 
-            token = strtok(NULL, " \t");
+            token = strtok(NULL, " \t\n");
             if (!token)
                 expected("@LABEL", "store rx, ");
 
@@ -445,33 +454,13 @@ void pass2(void) {
         }
 
         /************************************************
-                              memput
-         ************************************************/
-
-
-        else if (!strcmp(token, "memput")) {
-            token = strtok(NULL, " ,\t");
-            if (!token)
-                expected("rx", "memput");
-
-            i = base16_decode(token);
-            if (i > 0xF)
-                argument_size("memput r", "#F");
-
-            fputc(0x02, fpbin);
-            fputc(i << 4, fpbin);
-            fputc(0x03, fpbin);
-
-        }
-
-        /************************************************
                               jump
          ************************************************/
 
 
         else if (!strcmp(token, "jump")) {
             // 04mmmm
-            token = strtok(NULL, " \t");
+            token = strtok(NULL, " \t\n");
             if (!token)
                 expected("#ADDR OR @LABEL", "jump");
 
@@ -505,7 +494,7 @@ void pass2(void) {
 
         else if (!strcmp(token, "print0")) {
             // 05000
-            token = strtok(NULL, " \t");
+            token = strtok(NULL, " \t\n");
             if (token)
                 expected("NOTHING", "print0");
 
@@ -522,7 +511,7 @@ void pass2(void) {
 
         else if (!strcmp(token, "print")) {
             // 05000
-            token = strtok(NULL, " \t");
+            token = strtok(NULL, " \t\n");
             if (!token)
                 expected("#NUM", "print");
 
@@ -546,7 +535,7 @@ void pass2(void) {
 
         else if (!strcmp(token, "printi")) {
             // 05000
-            token = strtok(NULL, " \t");
+            token = strtok(NULL, " \t\n");
             if (token)
                 expected("NOTHING", "printi");
 
@@ -563,7 +552,7 @@ void pass2(void) {
 
         else if (!strcmp(token, "putchar")) {
             // 052nnn
-            token = strtok(NULL, " \t");
+            token = strtok(NULL, " \t\n");
             if (!token)
                 expected("#NUM", "putchar");
 
@@ -587,7 +576,7 @@ void pass2(void) {
 
         else if (!strcmp(token, "input")) {
             // 060000
-            token = strtok(NULL, " \t");
+            token = strtok(NULL, " \t\n");
             if (token)
                 expected("NOTHING", "input");
 
@@ -603,7 +592,7 @@ void pass2(void) {
 
 
         else if (!strcmp(token, "ifeq")) {
-            token = strtok(NULL, " ,\t");
+            token = strtok(NULL, " ,\t\n");
             if (!token)
                 expected("rx", "ifeq");
 
@@ -619,7 +608,7 @@ void pass2(void) {
             if (byte > 0xF)
                 argument_size("ifeq r", "#F");
 
-            token = strtok(NULL, " \t");
+            token = strtok(NULL, " \t\n");
 
             if (!token)
                 expected("#NUM OR ry", "ifeq rx, ");
@@ -660,7 +649,7 @@ void pass2(void) {
 
 
         else if (!strcmp(token, "ifneq")) {
-            token = strtok(NULL, " ,\t");
+            token = strtok(NULL, " ,\t\n");
             if (!token)
                 expected("rx", "ifneq");
 
@@ -676,7 +665,7 @@ void pass2(void) {
             if (byte > 0xF)
                 argument_size("ifneq #", "#F");
 
-            token = strtok(NULL, " \t");
+            token = strtok(NULL, " \t\n");
 
             if (!token)
                 expected("#NUM OR ry", "ifneq rx, ");
@@ -717,7 +706,7 @@ void pass2(void) {
 
 
         else if (!strcmp(token, "add")) {
-            token = strtok(NULL, " ,\t");
+            token = strtok(NULL, " ,\t\n");
             if (!token)
                 expected("rx or [X]", "add");
 
@@ -726,7 +715,7 @@ void pass2(void) {
                 if (i > 0xF)
                     argument_size("add r", "#F");
 
-                token = strtok(NULL, " \t");
+                token = strtok(NULL, " \t\n");
                 if (!token)
                     expected("ry or #NUM", "add rx, ");
 
@@ -761,7 +750,7 @@ void pass2(void) {
                 }
 
             } else if (!strcmp(token, "[X]")) {
-                token = strtok(NULL, " \t");
+                token = strtok(NULL, " \t\n");
                 if (!token)
                     expected("rx or #NUM", "add [X], ");
 
@@ -785,7 +774,7 @@ void pass2(void) {
 
 
         else if (!strcmp(token, "sub")) {
-            token = strtok(NULL, " ,\t");
+            token = strtok(NULL, " ,\t\n");
             if (!token)
                 expected("rx or [X]", "sub");
 
@@ -794,7 +783,7 @@ void pass2(void) {
                 if (i > 0xF)
                     argument_size("sub r", "#F");
 
-                token = strtok(NULL, " \t");
+                token = strtok(NULL, " \t\n");
                 if (!token)
                     expected("ry or #NUM", "sub rx, ");
 
@@ -829,7 +818,7 @@ void pass2(void) {
                 }
 
             } else if (!strcmp(token, "[X]")) {
-                token = strtok(NULL, " \t");
+                token = strtok(NULL, " \t\n");
                 if (!token)
                     expected("rx or #NUM", "sub [X], ");
 
@@ -852,7 +841,7 @@ void pass2(void) {
 
 
         else if (!strcmp(token, "mul")) {
-            token = strtok(NULL, " ,\t");
+            token = strtok(NULL, " ,\t\n");
             if (!token)
                 expected("rx", "mul");
 
@@ -861,7 +850,7 @@ void pass2(void) {
                 if (i > 0xF)
                     argument_size("mul r", "#F");
 
-                token = strtok(NULL, " \t");
+                token = strtok(NULL, " \t\n");
                 if (!token)
                     expected("ry OR #NUM", "mul rx, ");
 
@@ -906,7 +895,7 @@ void pass2(void) {
 
 
         else if (!strcmp(token, "div")) {
-            token = strtok(NULL, " ,\t");
+            token = strtok(NULL, " ,\t\n");
             if (!token)
                 expected("rx", "div");
 
@@ -915,7 +904,7 @@ void pass2(void) {
                 if (i > 0xF)
                     argument_size("div r", "#F");
 
-                token = strtok(NULL, " \t");
+                token = strtok(NULL, " \t\n");
                 if (!token)
                     expected("ry OR #NUM", "div rx, ");
 
@@ -960,7 +949,7 @@ void pass2(void) {
 
 
         else if (!strcmp(token, "call")) {
-            token = strtok(NULL, " ,\t");
+            token = strtok(NULL, " ,\t\n");
             if (!token)
                 expected("@LABEL OR #ADDR", "call");
 
@@ -993,7 +982,7 @@ void pass2(void) {
 
 
         else if (!strcmp(token, "ret")) {
-            token = strtok(NULL, " ,\t");
+            token = strtok(NULL, " ,\t\n");
             if (token)
                 expected("NOTHING", "ret");
 
@@ -1009,7 +998,7 @@ void pass2(void) {
 
 
         else if (!strcmp(token, "switchx")) {
-            token = strtok(NULL, " ,\t");
+            token = strtok(NULL, " ,\t\n");
             if (!token || *token != '#')
                 expected("#NUM", "switchx");
 
@@ -1081,7 +1070,7 @@ void pass2(void) {
 
 
         else if (!strcmp(token, "char")) {
-            token = strtok(NULL, " \t");
+            token = strtok(NULL, " \t\n");
             if (!token)
                 expected("#NUM", "char");
 
